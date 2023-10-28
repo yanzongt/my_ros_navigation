@@ -32,6 +32,11 @@
 #include "amcl_sensor.h"
 #include "../map/map.h"
 
+/* yzt: 这里实现的并不好，
+1 把算法更新的传感器类型定义完全结合在一起了，如果这个类的本意就是更新算法，应该换一个名字。（实际上传感器类型就是sensor_data）
+2 实现了三种方法，可以通过一个统一接口来实现的，这样外部的调用更加简洁。
+*/
+
 namespace amcl
 {
 
@@ -51,6 +56,7 @@ class AMCLLaserData : public AMCLSensorData
   // Laser range data (range, bearing tuples)
   public: int range_count;
   public: double range_max;
+  // 0: range, 1: angle
   public: double (*ranges)[2];
 };
 
