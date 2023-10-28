@@ -411,9 +411,7 @@ AmclNode::AmclNode() :
     laser_model_type_ = LASER_MODEL_LIKELIHOOD_FIELD;
   else if(tmp_model_type == "likelihood_field_prob"){
     laser_model_type_ = LASER_MODEL_LIKELIHOOD_FIELD_PROB;
-  }
-  else
-  {
+  } else {
     ROS_WARN("Unknown laser model type \"%s\"; defaulting to likelihood_field model",
              tmp_model_type.c_str());
     laser_model_type_ = LASER_MODEL_LIKELIHOOD_FIELD;
@@ -679,6 +677,7 @@ void AmclNode::runFromBag(const std::string &in_bag_fn, bool trigger_global_loca
   bag.open(in_bag_fn, rosbag::bagmode::Read);
   std::vector<std::string> topics;
   topics.push_back(std::string("tf"));
+  // yzt: this can be done by select topic name which type is LaserScan
   std::string scan_topic_name = "base_scan"; // TODO determine what topic this actually is from ROS
   topics.push_back(scan_topic_name);
   rosbag::View view(bag, rosbag::TopicQuery(topics));
@@ -790,6 +789,7 @@ void AmclNode::savePoseToServer()
                                   last_published_pose.pose.covariance[6*5+5]);
 }
 
+// yzt: update pose from parameter server
 void AmclNode::updatePoseFromServer()
 {
   init_pose_[0] = 0.0;
@@ -993,6 +993,7 @@ AmclNode::convertMap( const nav_msgs::OccupancyGrid& map_msg )
   map->size_x = map_msg.info.width;
   map->size_y = map_msg.info.height;
   map->scale = map_msg.info.resolution;
+  // yzt: map origin in the center of grid, map msg's origin in the left bottom corner
   map->origin_x = map_msg.info.origin.position.x + (map->size_x / 2) * map->scale;
   map->origin_y = map_msg.info.origin.position.y + (map->size_y / 2) * map->scale;
   // Convert to player format
@@ -1001,7 +1002,7 @@ AmclNode::convertMap( const nav_msgs::OccupancyGrid& map_msg )
   for(int i=0;i<map->size_x * map->size_y;i++)
   {
     if(map_msg.data[i] == 0)
-      map->cells[i].occ_state = -1;
+      map->cells[i].occ_state = -1; // yzt: -1 is free space, not unknown space
     else if(map_msg.data[i] == 100)
       map->cells[i].occ_state = +1;
     else
@@ -1020,6 +1021,8 @@ AmclNode::~AmclNode()
   // TODO: delete everything allocated in constructor
 }
 
+// yzt: get odom pose from tf server, odom is defined by frame id and time;
+// update xy and yaw at same time
 bool
 AmclNode::getOdomPose(geometry_msgs::PoseStamped& odom_pose,
                       double& x, double& y, double& yaw,
@@ -1051,6 +1054,7 @@ pf_vector_t
 AmclNode::uniformPoseGenerator(void* arg)
 {
   map_t* map = (map_t*)arg;
+// yzt: new uniform sampling can provide point at free space, good point!
 #if NEW_UNIFORM_SAMPLING
   unsigned int rand_index = drand48() * free_space_indices.size();
   std::pair<int,int> free_point = free_space_indices[rand_index];
@@ -1097,6 +1101,7 @@ AmclNode::globalLocalizationCallback(std_srvs::Empty::Request& req,
   pf_init_model(pf_, (pf_init_model_fn_t)AmclNode::uniformPoseGenerator,
                 (void *)map_);
   ROS_INFO("Global initialisation done!");
+  // yzt: shoule named "need_init_pf_"
   pf_init_ = false;
   return true;
 }
@@ -1125,6 +1130,8 @@ AmclNode::setMapCallback(nav_msgs::SetMap::Request& req,
   return true;
 }
 
+// yzt: 这里函数的顺序就很好，从上到下阅读非常流畅
+
 void
 AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
 {
@@ -1133,6 +1140,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
   if( map_ == NULL ) {
     return;
   }
+  // yzt: configure_mutex_ is a global_mutex_
   boost::recursive_mutex::scoped_lock lr(configuration_mutex_);
   int laser_index = -1;
 
@@ -1168,6 +1176,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     laser_pose_v.v[1] = laser_pose.pose.position.y;
     // laser mounting angle gets computed later -> set to 0 here!
     laser_pose_v.v[2] = 0;
+    // yzt: laser pose is T^base_{laser_n}
     lasers_[laser_index]->SetLaserPose(laser_pose_v);
     ROS_DEBUG("Received laser's pose wrt robot: %.3f %.3f %.3f",
               laser_pose_v.v[0],
@@ -1181,7 +1190,8 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
   }
 
   // Where was the robot when this scan was taken?
-  pf_vector_t pose;
+  // yzt: this pose get from other node, wheel odom for example
+  pf_vector_t pose; // T^global_base
   if(!getOdomPose(latest_odom_pose_, pose.v[0], pose.v[1], pose.v[2],
                   laser_scan->header.stamp, base_frame_id_))
   {
@@ -1244,6 +1254,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     odata.delta = delta;
 
     // Use the action data to update the filter
+    // yzt: step 1, delta from odometry
     odom_->UpdateAction(pf_, (AMCLSensorData*)&odata);
 
     // Pose at last filter update
@@ -1325,7 +1336,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
       ldata.ranges[i][1] = angle_min +
               (i * angle_increment);
     }
-
+    // yzt: step2 obvs update
     lasers_[laser_index]->UpdateSensor(pf_, (AMCLSensorData*)&ldata);
 
     lasers_update_[laser_index] = false;
@@ -1386,6 +1397,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
       hyps[hyp_count].pf_pose_mean = pose_mean;
       hyps[hyp_count].pf_pose_cov = pose_cov;
 
+      // yzt: select the cluster with max weight
       if(hyps[hyp_count].weight > max_weight)
       {
         max_weight = hyps[hyp_count].weight;
@@ -1466,7 +1478,7 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
         tmp_tf_stamped.header.frame_id = base_frame_id_;
         tmp_tf_stamped.header.stamp = laser_scan->header.stamp;
         tf2::toMsg(tmp_tf.inverse(), tmp_tf_stamped.pose);
-
+	// yzt: pf update odom to map tranform, not map to base_link
         this->tf_->transform(tmp_tf_stamped, odom_to_map, odom_frame_id_);
       }
       catch(const tf2::TransformException&)
